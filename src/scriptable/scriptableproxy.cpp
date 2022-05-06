@@ -94,6 +94,7 @@ namespace {
 const quint32 serializedFunctionCallMagicNumber = 0x58746908;
 const quint32 serializedFunctionCallVersion = 2;
 
+#if QT_VERSION < QT_VERSION_CHECK(6,0,0)
 void registerMetaTypes() {
     static bool registered = false;
     if (registered)
@@ -112,6 +113,24 @@ void registerMetaTypes() {
 
     registered = true;
 }
+#endif
+
+template<typename Predicate>
+void selectionRemoveIf(QList<QPersistentModelIndex> *indexes, Predicate predicate)
+{
+    indexes->erase(
+        std::remove_if(indexes->begin(), indexes->end(), predicate),
+        indexes->end());
+}
+
+void selectionRemoveInvalid(QList<QPersistentModelIndex> *indexes)
+{
+    selectionRemoveIf(
+        indexes,
+        [](const QPersistentModelIndex &index){
+            return !index.isValid();
+        });
+}
 
 } // namespace
 
@@ -128,9 +147,30 @@ void registerMetaTypes() {
     emit sendMessage(f.serialize(functionCallId, args), CommandFunctionCall); \
 } while(false)
 
+#if QT_VERSION >= QT_VERSION_CHECK(6,0,0)
+#   define CHECK_STREAM_OPERATORS(CALL) \
+        static constexpr auto metaType = QMetaType::fromType<Result>(); \
+        COPYQ_LOG_VERBOSE( \
+            QStringLiteral("%1 invoking: %2 " CALL)\
+                .arg(m_wnd ? "Server" : "Client") \
+                .arg(metaType.name())); \
+        Q_ASSERT(metaType.hasRegisteredDataStreamOperators())
+#else
+#   define CHECK_STREAM_OPERATORS(CALL) \
+        if ( hasLogLevel(LogTrace) ) { \
+            static const auto metaTypeName = QMetaType::typeName(qMetaTypeId<Result>()); \
+            COPYQ_LOG_VERBOSE( \
+                QStringLiteral("%1 invoking: %2 " CALL)\
+                    .arg(m_wnd ? "Server" : "Client") \
+                    .arg(metaTypeName) \
+            ); \
+        }
+#endif
+
 #define INVOKE(FUNCTION, ARGUMENTS) do { \
+    using Result = decltype(FUNCTION ARGUMENTS); \
+    CHECK_STREAM_OPERATORS(STR(#FUNCTION #ARGUMENTS)); \
     if (!m_wnd) { \
-        using Result = decltype(FUNCTION ARGUMENTS); \
         const auto functionCallId = ++m_lastFunctionCallId; \
         INVOKE_(FUNCTION, ARGUMENTS, functionCallId); \
         const auto result = waitForFunctionCallFinished(functionCallId); \
@@ -185,64 +225,6 @@ QDataStream &operator>>(QDataStream &in, NamedValueList &list)
         in >> item.name >> item.value;
         list.append(item);
     }
-    Q_ASSERT(in.status() == QDataStream::Ok);
-    return in;
-}
-
-QDataStream &operator<<(QDataStream &out, const Command &command)
-{
-    out << command.name
-        << command.re
-        << command.wndre
-        << command.matchCmd
-        << command.cmd
-        << command.sep
-        << command.input
-        << command.output
-        << command.wait
-        << command.automatic
-        << command.display
-        << command.inMenu
-        << command.isGlobalShortcut
-        << command.isScript
-        << command.transform
-        << command.remove
-        << command.hideWindow
-        << command.enable
-        << command.icon
-        << command.shortcuts
-        << command.globalShortcuts
-        << command.tab
-        << command.outputTab;
-    Q_ASSERT(out.status() == QDataStream::Ok);
-    return out;
-}
-
-QDataStream &operator>>(QDataStream &in, Command &command)
-{
-    in >> command.name
-       >> command.re
-       >> command.wndre
-       >> command.matchCmd
-       >> command.cmd
-       >> command.sep
-       >> command.input
-       >> command.output
-       >> command.wait
-       >> command.automatic
-       >> command.display
-       >> command.inMenu
-       >> command.isGlobalShortcut
-       >> command.isScript
-       >> command.transform
-       >> command.remove
-       >> command.hideWindow
-       >> command.enable
-       >> command.icon
-       >> command.shortcuts
-       >> command.globalShortcuts
-       >> command.tab
-       >> command.outputTab;
     Q_ASSERT(in.status() == QDataStream::Ok);
     return in;
 }
@@ -322,7 +304,11 @@ public:
     {
         QByteArray bytes;
         QDataStream stream(&bytes, QIODevice::WriteOnly);
+#if QT_VERSION >= QT_VERSION_CHECK(6,0,0)
+        stream.setVersion(QDataStream::Qt_6_0);
+#else
         stream.setVersion(QDataStream::Qt_5_0);
+#endif
         stream << serializedFunctionCallMagicNumber << serializedFunctionCallVersion
                << functionCallId << m_slotName << args;
         return bytes;
@@ -371,7 +357,7 @@ public:
         QLabel::paintEvent(ev);
         if (selectionRect.isValid()) {
             QPainter p(this);
-            const auto w = pointsToPixels(1);
+            const auto w = pointsToPixels(1, this);
 
             p.setPen(QPen(Qt::white, w));
             p.drawRect(selectionRect);
@@ -498,7 +484,7 @@ QWidget *createListWidget(const QString &name, const QStringList &items, InputDi
             ? inputDialog->defaultChoice.toString()
             : items.value(0);
 
-    const QString listPrefix = ".list:";
+    const QLatin1String listPrefix(".list:");
     if ( name.startsWith(listPrefix) ) {
         QListWidget *w = createAndSetWidget<QListWidget>("currentRow", QVariant(), parent);
         w->addItems(items);
@@ -508,7 +494,7 @@ QWidget *createListWidget(const QString &name, const QStringList &items, InputDi
         w->setAlternatingRowColors(true);
         installShortcutToCloseDialog(parent, w, Qt::Key_Enter);
         installShortcutToCloseDialog(parent, w, Qt::Key_Return);
-        return label(Qt::Vertical, name.mid(listPrefix.length()), w);
+        return label(Qt::Vertical, name.mid(listPrefix.size()), w);
     }
 
     QComboBox *w = createAndSetWidget<QComboBox>("currentText", QVariant(), parent);
@@ -517,9 +503,16 @@ QWidget *createListWidget(const QString &name, const QStringList &items, InputDi
     w->setCurrentIndex(items.indexOf(currentText));
     w->lineEdit()->setText(currentText);
     w->lineEdit()->selectAll();
-    w->setMaximumWidth( pointsToPixels(400) );
+    w->setMaximumWidth( pointsToPixels(400, w) );
     installShortcutToCloseDialog(parent, w, Qt::Key_Enter);
     installShortcutToCloseDialog(parent, w, Qt::Key_Return);
+
+    const QLatin1String comboPrefix(".combo:");
+    if ( name.startsWith(comboPrefix) ) {
+        w->setEditable(false);
+        return label(Qt::Horizontal, name.mid(comboPrefix.size()), w);
+    }
+
     return label(Qt::Horizontal, name, w);
 }
 
@@ -611,8 +604,8 @@ void setGeometryWithoutSave(QWidget *window, QRect geometry)
             ? QCursor::pos()
             : geometry.topLeft();
 
-    const int w = pointsToPixels(geometry.width());
-    const int h = pointsToPixels(geometry.height());
+    const int w = pointsToPixels(geometry.width(), window);
+    const int h = pointsToPixels(geometry.height(), window);
     if (w > 0 && h > 0)
         window->resize(w, h);
 
@@ -834,7 +827,18 @@ ScriptableProxy::ScriptableProxy(MainWindow *mainWindow, QObject *parent)
     : QObject(parent)
     , m_wnd(mainWindow)
 {
+    connect( this, &ScriptableProxy::clientDisconnected,
+             this, [this]() {
+                 m_disconnected = true;
+                 emit abortEvaluation();
+             } );
+
+#if QT_VERSION < QT_VERSION_CHECK(6,0,0)
     registerMetaTypes();
+#else
+    Q_ASSERT(QMetaType::fromType<Command>().hasRegisteredDataStreamOperators());
+    Q_ASSERT(QMetaType::fromType<ClipboardMode>().hasRegisteredDataStreamOperators());
+#endif
 }
 
 void ScriptableProxy::callFunction(const QByteArray &serializedFunctionCall)
@@ -943,7 +947,14 @@ QByteArray ScriptableProxy::callFunctionHelper(const QByteArray &serializedFunct
         called = metaMethod.invoke(
                 this, args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7], args[8]);
     } else {
+#if QT_VERSION >= QT_VERSION_CHECK(6,0,0)
+        const QMetaType metaType(typeId);
+        COPYQ_LOG_VERBOSE(QStringLiteral("Script function return type: %1").arg(metaType.name()));
+        Q_ASSERT(metaType.hasRegisteredDataStreamOperators());
+        returnValue = QVariant(metaType, nullptr);
+#else
         returnValue = QVariant(typeId, nullptr);
+#endif
         const auto genericReturnValue = returnValue.isValid()
                 ? QGenericReturnArgument(returnValue.typeName(), static_cast<void*>(returnValue.data()) )
                 : Q_RETURN_ARG(QVariant, returnValue);
@@ -963,6 +974,10 @@ QByteArray ScriptableProxy::callFunctionHelper(const QByteArray &serializedFunct
     {
         QDataStream stream(&bytes, QIODevice::WriteOnly);
         stream << functionCallId << returnValue;
+        if (stream.status() != QDataStream::Ok) {
+            log("Failed to write scriptable proxy slot call return value", LogError);
+            Q_ASSERT(false);
+        }
     }
 
     return bytes;
@@ -1453,17 +1468,24 @@ bool ScriptableProxy::exportData(const QString &fileName)
     return m_wnd->exportAllData(fileName);
 }
 
-QVariant ScriptableProxy::config(const QStringList &nameValue)
+QVariant ScriptableProxy::config(const QVariantList &nameValue)
 {
     INVOKE(config, (nameValue));
     return m_wnd->config(nameValue);
+}
+
+QString ScriptableProxy::configDescription()
+{
+    INVOKE(configDescription, ());
+    return m_wnd->configDescription();
 }
 
 QVariant ScriptableProxy::toggleConfig(const QString &optionName)
 {
     INVOKE(toggleConfig, (optionName));
 
-    QStringList nameValue(optionName);
+    QVariantList nameValue;
+    nameValue.append(optionName);
     const auto values = m_wnd->config(nameValue);
     if ( values.type() == QVariant::StringList )
         return values;
@@ -1473,7 +1495,7 @@ QVariant ScriptableProxy::toggleConfig(const QString &optionName)
         return QVariant();
 
     const auto newValue = !QVariant(oldValue).toBool();
-    nameValue.append( QVariant(newValue).toString() );
+    nameValue.append(newValue);
     return m_wnd->config(nameValue).toMap().constBegin().value();
 }
 
@@ -1680,6 +1702,292 @@ void ScriptableProxy::setSelectedItemsData(const QVector<QVariantMap> &dataList)
     }
 }
 
+int ScriptableProxy::createSelection(const QString &tabName)
+{
+    INVOKE(createSelection, (tabName));
+    const int newSelectionId = ++m_lastSelectionId;
+    ClipboardBrowser *c = fetchBrowser(tabName);
+    if (c)
+        m_selections[newSelectionId] = {c, {}};
+    return newSelectionId;
+}
+
+int ScriptableProxy::selectionCopy(int id)
+{
+    INVOKE(selectionCopy, (id));
+    const int newSelectionId = ++m_lastSelectionId;
+    auto selection = m_selections.value(id);
+    if (selection.browser)
+        m_selections[newSelectionId] = selection;
+    return newSelectionId;
+}
+
+void ScriptableProxy::destroySelection(int id)
+{
+    INVOKE2(destroySelection, (id));
+    m_selections.remove(id);
+}
+
+void ScriptableProxy::selectionRemoveAll(int id)
+{
+    INVOKE2(selectionRemoveAll, (id));
+    auto selection = m_selections.take(id);
+    if (!selection.browser)
+        return;
+    selectionRemoveInvalid(&selection.indexes);
+
+    QModelIndexList indexes;
+    for (const auto &index : selection.indexes)
+        indexes.append(index);
+
+    selection.browser->removeIndexes(indexes);
+
+    selectionRemoveInvalid(&selection.indexes);
+    m_selections[id] = selection;
+}
+
+void ScriptableProxy::selectionSelectRemovable(int id)
+{
+    INVOKE2(selectionSelectRemovable, (id));
+    auto selection = m_selections.take(id);
+    if (!selection.browser)
+        return;
+
+    // Use error argument for canRemoveItems() to ensure that a message dialog is not shown.
+    QString error;
+    QList<QPersistentModelIndex> indexes;
+    for (int row = 0; row < selection.browser->length(); ++row) {
+        const auto index = selection.browser->index(row);
+        if ( !selection.indexes.contains(index) && selection.browser->canRemoveItems({index}, &error) )
+            indexes.append(index);
+    }
+    selection.indexes.append(indexes);
+    m_selections[id] = selection;
+}
+
+void ScriptableProxy::selectionInvert(int id)
+{
+    INVOKE2(selectionInvert, (id));
+    auto selection = m_selections.take(id);
+    if (!selection.browser)
+        return;
+
+    QList<QPersistentModelIndex> indexes;
+    for (int row = 0; row < selection.browser->length(); ++row) {
+        const auto index = selection.browser->index(row);
+        if ( !selection.indexes.contains(index) )
+            indexes.append(index);
+    }
+    selection.indexes = indexes;
+    m_selections[id] = selection;
+}
+
+void ScriptableProxy::selectionSelectAll(int id)
+{
+    INVOKE2(selectionSelectAll, (id));
+    auto selection = m_selections.take(id);
+    if (!selection.browser)
+        return;
+
+    selection.indexes.clear();
+    for (int row = 0; row < selection.browser->length(); ++row)
+        selection.indexes.append(selection.browser->index(row));
+    m_selections[id] = selection;
+}
+
+void ScriptableProxy::selectionSelect(int id, const QVariant &maybeRe, const QString &mimeFormat)
+{
+    INVOKE2(selectionSelect, (id, maybeRe, mimeFormat));
+    auto selection = m_selections.take(id);
+    if (!selection.browser)
+        return;
+
+    const QRegularExpression re = maybeRe.toRegularExpression();
+    QList<QPersistentModelIndex> indexes;
+    for (int row = 0; row < selection.browser->length(); ++row) {
+        const auto index = selection.browser->index(row);
+        if ( selection.indexes.contains(index) )
+            continue;
+
+        const QVariantMap dataMap = index.data(contentType::data).toMap();
+        if ( mimeFormat.isEmpty() ) {
+            if ( !maybeRe.isValid() )
+                continue;
+            const QString text = getTextData(dataMap);
+            if ( text.contains(re) )
+                indexes.append(index);
+        } else if ( dataMap.contains(mimeFormat) == maybeRe.isValid() ) {
+            const QString text = getTextData(dataMap, mimeFormat);
+            if ( text.contains(re) )
+                indexes.append(index);
+        }
+    }
+    selection.indexes.append(indexes);
+    m_selections[id] = selection;
+}
+
+void ScriptableProxy::selectionDeselectIndexes(int id, const QVector<int> &indexes)
+{
+    INVOKE2(selectionDeselectIndexes, (id, indexes));
+
+    auto selection = m_selections.take(id);
+    auto indexesSorted = indexes;
+    std::sort(indexesSorted.begin(), indexesSorted.end(), std::greater<int>());
+    for (int index : indexesSorted)
+        selection.indexes.removeAt(index);
+    m_selections[id] = selection;
+}
+
+void ScriptableProxy::selectionDeselectSelection(int id, int toDeselectId)
+{
+    INVOKE2(selectionDeselectSelection, (id, toDeselectId));
+    auto selection = m_selections.take(id);
+    const auto deselection = m_selections.value(toDeselectId);
+
+    selectionRemoveIf(
+        &selection.indexes,
+        [&](const QPersistentModelIndex &index){
+            return !index.isValid() || deselection.indexes.contains(index);
+        });
+    m_selections[id] = selection;
+}
+
+void ScriptableProxy::selectionGetCurrent(int id)
+{
+    INVOKE2(selectionGetCurrent, (id));
+    auto selection = m_selections.take(id);
+    if (!selection.browser)
+        return;
+
+    auto selected = selectedIndexes();
+    selectionRemoveInvalid(&selected);
+    if ( selected.isEmpty() ) {
+        m_selections[id] = {nullptr, {}};
+    } else {
+        ClipboardBrowser *c = m_wnd->browserForItem(selected.first());
+        m_selections[id] = {c, selected};
+    }
+}
+
+int ScriptableProxy::selectionGetSize(int id)
+{
+    INVOKE(selectionGetSize, (id));
+    return m_selections.value(id).indexes.size();
+}
+
+QString ScriptableProxy::selectionGetTabName(int id)
+{
+    INVOKE(selectionGetTabName, (id));
+    const auto selection = m_selections.value(id);
+    return selection.browser ? selection.browser->tabName() : QString();
+}
+
+QVector<int> ScriptableProxy::selectionGetRows(int id)
+{
+    INVOKE(selectionGetRows, (id));
+
+    auto selection = m_selections.value(id);
+    selectionRemoveInvalid(&selection.indexes);
+    QVector<int> rows;
+    rows.reserve(selection.indexes.size());
+    for (const auto &index : selection.indexes)
+        rows.append(index.row());
+    return rows;
+}
+
+QVariantMap ScriptableProxy::selectionGetItemIndex(int id, int index)
+{
+    INVOKE(selectionGetItemIndex, (id, index));
+
+    auto selection = m_selections.value(id);
+    if ( selection.indexes.isEmpty() || index < 0 || index >= selection.indexes.size() )
+        return {};
+
+    return selection.indexes[index].data(contentType::data).toMap();
+}
+
+void ScriptableProxy::selectionSetItemIndex(int id, int index, const QVariantMap &item)
+{
+    INVOKE2(selectionSetItemIndex, (id, index, item));
+
+    const auto selection = m_selections.value(id);
+    if ( !selection.browser || index < 0 || index >= selection.indexes.size() )
+        return;
+
+    const QModelIndex ind = selection.indexes[index];
+    selection.browser->model()->setData(ind, item, contentType::data);
+}
+
+QVariantList ScriptableProxy::selectionGetItemsData(int id)
+{
+    INVOKE(selectionGetItemsData, (id));
+
+    QVariantList dataList;
+    const auto selection = m_selections.value(id);
+    for (const auto &index : selection.indexes) {
+        const auto data = index.data(contentType::data).toMap();
+        dataList.append(data);
+    }
+    return dataList;
+}
+
+void ScriptableProxy::selectionSetItemsData(int id, const QVariantList &dataList)
+{
+    INVOKE2(selectionSetItemsData, (id, dataList));
+
+    const auto selection = m_selections.value(id);
+    const auto count = std::min( selection.indexes.size(), dataList.size() );
+    for ( int i = 0; i < count; ++i ) {
+        const auto &index = selection.indexes[i];
+        if ( index.isValid() )
+            selection.browser->model()->setData(index, dataList[i], contentType::data);
+    }
+}
+
+QVariantList ScriptableProxy::selectionGetItemsFormat(int id, const QString &format)
+{
+    INVOKE(selectionGetItemsFormat, (id, format));
+
+    QVariantList dataList;
+    const auto selection = m_selections.value(id);
+    for (const auto &index : selection.indexes) {
+        const auto data = index.data(contentType::data).toMap();
+        dataList.append( data.value(format) );
+    }
+    return dataList;
+}
+
+void ScriptableProxy::selectionSetItemsFormat(int id, const QString &mime, const QVariant &value)
+{
+    INVOKE2(selectionSetItemsFormat, (id, mime, value));
+
+    const auto selection = m_selections.value(id);
+    for (const auto &index : selection.indexes) {
+        if ( index.isValid() ) {
+            QVariantMap data = index.data(contentType::data).toMap();
+            if (value.isValid())
+                data[mime] = value;
+            else
+                data.remove(mime);
+            selection.browser->model()->setData(index, data, contentType::data);
+        }
+    }
+}
+
+void ScriptableProxy::selectionMove(int id, int row)
+{
+    INVOKE2(selectionMove, (id, row));
+    auto selection = m_selections.value(id);
+    selectionRemoveInvalid(&selection.indexes);
+
+    QModelIndexList indexes;
+    for (const auto &index : selection.indexes)
+        indexes.append(index);
+
+    if ( !indexes.isEmpty() )
+        selection.browser->move(indexes, row);
+}
+
 #ifdef HAS_TESTS
 void ScriptableProxy::sendKeys(const QString &expectedWidgetName, const QString &keys, int delay)
 {
@@ -1753,6 +2061,7 @@ int ScriptableProxy::inputDialog(const NamedValueList &values)
     inputDialog.dialog = new QDialog(m_wnd);
     QDialog &dialog = *inputDialog.dialog;
 
+    QString dialogTitle;
     QIcon icon;
     QVBoxLayout layout(&dialog);
     QWidgetList widgets;
@@ -1763,7 +2072,7 @@ int ScriptableProxy::inputDialog(const NamedValueList &values)
 
     for (const auto &value : values) {
         if (value.name == ".title")
-            dialog.setWindowTitle( value.value.toString() );
+            dialogTitle = value.value.toString();
         else if (value.name == ".icon")
             icon = loadIcon(value.value.toString());
         else if (value.name == ".style")
@@ -1839,7 +2148,13 @@ int ScriptableProxy::inputDialog(const NamedValueList &values)
     });
 
     // Connecting this directly to QEventLoop::quit() doesn't seem to work always.
-    connect(this, &ScriptableProxy::clientDisconnected, &dialog, &QDialog::reject);
+    connect(this, &ScriptableProxy::abortEvaluation, &dialog, &QDialog::reject);
+
+    if ( !dialogTitle.isNull() ) {
+        dialog.setWindowTitle(dialogTitle);
+        dialog.setObjectName(QLatin1String("dialog_") + dialogTitle);
+        WindowGeometryGuard::create(&dialog);
+    }
 
     dialog.show();
 
@@ -2310,6 +2625,9 @@ QList<QPersistentModelIndex> ScriptableProxy::selectedIndexes() const
 
 QVariant ScriptableProxy::waitForFunctionCallFinished(int functionCallId)
 {
+    if (m_disconnected)
+        return QVariant();
+
     QVariant result;
 
     QEventLoop loop;
@@ -2320,8 +2638,9 @@ QVariant ScriptableProxy::waitForFunctionCallFinished(int functionCallId)
                 result = returnValue;
                 loop.quit();
             });
-    connect(this, &ScriptableProxy::clientDisconnected, &loop, &QEventLoop::quit);
-    connect(qApp, &QCoreApplication::aboutToQuit, &loop, &QEventLoop::quit);
+    connect(this, &ScriptableProxy::abortEvaluation, &loop, &QEventLoop::quit);
+
+    connect(QCoreApplication::instance(), &QCoreApplication::aboutToQuit, &loop, &QEventLoop::quit);
     loop.exec();
 
     return result;

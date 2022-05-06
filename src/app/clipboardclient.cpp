@@ -158,9 +158,6 @@ void ClipboardClient::start(const QStringList &arguments)
     connect( &socket, &ClientSocket::disconnected,
              &scriptableProxy, &ScriptableProxy::clientDisconnected );
 
-    connect( &scriptable, &Scriptable::finished,
-             &scriptableProxy, &ScriptableProxy::clientDisconnected );
-
     connect( this, &ClipboardClient::dataReceived,
              &scriptable, &Scriptable::dataReceived, Qt::QueuedConnection );
     connect( &scriptable, &Scriptable::receiveData,
@@ -169,11 +166,7 @@ void ClipboardClient::start(const QStringList &arguments)
              });
 
     bool hasActionId;
-#if QT_VERSION < QT_VERSION_CHECK(5,5,0)
-    auto actionId = qgetenv("COPYQ_ACTION_ID").toInt(&hasActionId);
-#else
     auto actionId = qEnvironmentVariableIntValue("COPYQ_ACTION_ID", &hasActionId);
-#endif
     const auto actionName = getTextData( qgetenv("COPYQ_ACTION_NAME") );
 
     if ( socket.start() ) {

@@ -7,7 +7,10 @@ CopyQ provides scripting capabilities to automatically handle clipboard
 changes, organize items, change settings and much more.
 
 Supported language features and base function can be found at `ECMAScript
-Reference <http://doc.qt.io/qt-5/ecmascript.html>`__.
+Reference <http://doc.qt.io/qt-5/ecmascript.html>`__. The language is mostly
+equivalent to modern JavaScript. Some features may be missing but feel free to
+use for example `JavaScript reference on MDN
+<https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/>`__.
 
 CopyQ-specific features described in this document:
 
@@ -1084,21 +1087,28 @@ unlike in GUI, where row numbers start from 1 by default.
        print('Amount: ' + result['Enter Amount'] + '\n')
        print('File: ' + result['Choose File'] + '\n')
 
-   Editable combo box can be created by passing array. Current value can be
-   provided using ``.defaultChoice`` (by default it's the first item).
+   A combo box with an editable custom text/value can be created by passing an
+   array argument. The default text can be provided using ``.defaultChoice``
+   (by default it's the first item).
 
    .. code-block:: js
 
        var text = dialog('.defaultChoice', '', 'Select', ['a', 'b', 'c'])
 
-   List can be created by prefixing name/label with ``.list:`` and passing
-   array.
+   A combo box with non-editable text can be created by prefixing the label
+   argument with ``.combo:``.
+
+   .. code-block:: js
+
+       var text = dialog('.combo:Select', ['a', 'b', 'c'])
+
+   An item list can be created by prefixing the label argument with ``.list:``.
 
    .. code-block:: js
 
        var items = ['a', 'b', 'c']
        var selected_index = dialog('.list:Select', items)
-       if (selected_index)
+       if (selected_index !== undefined)
            print('Selected item: ' + items[selected_index])
 
    Icon for custom dialog can be set from icon font, file path or theme.
@@ -1175,9 +1185,9 @@ unlike in GUI, where row numbers start from 1 by default.
 
    Returns text representation of current date and time.
 
-   See
-   `QDateTime::toString() <http://doc.qt.io/qt-5/qdatetime.html#toString>`__
-   for details on formatting date and time.
+   See `Date QML Type
+   <https://doc.qt.io/qt-5/qml-qtqml-date.html#format-strings>`__ for details
+   on formatting date and time.
 
    :returns: Current date and time as string.
    :rtype: string
@@ -1225,6 +1235,11 @@ unlike in GUI, where row numbers start from 1 by default.
 
    :returns: Serialized commands.
    :rtype: string
+
+.. js:function:: addCommands(Command[])
+
+   Opens Command dialog, adds commands and waits for user to confirm the
+   dialog.
 
 .. js:function:: NetworkReply networkGet(url)
 
@@ -1568,7 +1583,7 @@ unlike in GUI, where row numbers start from 1 by default.
    :returns: Style identifiers.
    :rtype: array of strings
 
-   To change or update style use::
+   To change or update style use:
 
    .. code-block:: js
 
@@ -1654,6 +1669,50 @@ Types
 
    To open file in different modes, use same open methods as for `File`.
 
+.. js:class:: Settings
+
+   Reads and writes INI configuration files. Wrapper for QSettings Qt class.
+
+   See `QSettings <https://doc.qt.io/qt-5/qsettings.html>`__.
+
+   .. code-block:: js
+
+       // Open INI file
+       var configPath = Dir().homePath() + '/copyq.ini'
+       var settings = new Settings(configPath)
+
+       // Save an option
+       settings.setValue('option1', 'test')
+
+       // Store changes to the config file now instead of at the end of
+       // executing the script
+       settings.sync()
+
+       // Read the option value
+       var value = settings.value('option1')
+
+   Working with arrays:
+
+   .. code-block:: js
+
+       // Write array
+       var settings = new Settings(configPath)
+       settings.beginWriteArray('array1')
+       settings.setArrayIndex(0)
+       settings.setValue('some_option', 1)
+       settings.setArrayIndex(1)
+       settings.setValue('some_option', 2)
+       settings.endArray()
+       settings.sync()
+
+       // Read array
+       var settings = new Settings(configPath)
+       const arraySize = settings.beginReadArray('array1')
+       for (var i = 0; i < arraySize; i++) {
+           settings.setArrayIndex(i);
+           print('Index ' + i + ': ' + settings.value('some_option') + '\n')
+       }
+
 .. js:class:: Item
 
    Object with MIME types of an item.
@@ -1669,31 +1728,234 @@ Types
        item[mimeHtml] = '<p>Hello, World!</p>'
        write(mimeItems, pack(item))
 
+.. js:class:: ItemSelection
+
+   List of items from given tab.
+
+   An item in the list represents the same item in tab even if it is moved to a
+   different row.
+
+   New items in the tab are not added automatically into the selection.
+
+   To create new empty selection use ``ItemSelection()`` then add items with
+   ``select*()`` methods.
+
+   Example - move matching items to the top of the tab:
+
+   .. code-block:: js
+
+       ItemSelection().select(/^prefix/).move(0)
+
+   Example - remove all items from given tab but keep pinned items:
+
+   .. code-block:: js
+
+       ItemSelection(tabName).selectRemovable().removeAll();
+
+   Example - modify items containing "needle" text:
+
+   .. code-block:: js
+
+       var sel = ItemSelection().select(/needle/, mimeText);
+       for (var index = 0; index < sel.length; ++index) {
+           var item = sel.itemAtIndex(index);
+           item[mimeItemNotes] = 'Contains needle';
+           sel.setItemAtIndex(item);
+       }
+
+   Example - selection with new items only:
+
+   .. code-block:: js
+
+       var sel = ItemSelection().selectAll()
+       add("New Item 1")
+       add("New Item 2")
+       sel.invert()
+       sel.items();
+
+   .. js:attribute:: tab
+
+       Tab name
+
+   .. js:attribute:: length
+
+       Number of filtered items in the selection
+
+   .. js:method:: selectAll()
+
+       Select all items in the tab.
+
+       :returns: self
+       :rtype: ItemSelection
+
+   .. js:method:: select(regexp, [mimeType])
+
+       Select additional items matching the regular expression.
+
+       If regexp is a valid regular expression and ``mimeType`` is not set,
+       this selects items with matching text.
+
+       If regexp matches empty strings and ``mimeType`` is set, this selects
+       items containing the MIME type.
+
+       If regexp is ``undefined`` and ``mimeType`` is set, this select items
+       not containing the MIME type.
+
+       :returns: self
+       :rtype: ItemSelection
+
+   .. js:method:: selectRemovable()
+
+       Select only items that can be removed.
+
+       :returns: self
+       :rtype: ItemSelection
+
+   .. js:method:: invert()
+
+       Select only items not in the selection.
+
+       :returns: self
+       :rtype: ItemSelection
+
+   .. js:method:: deselectIndexes(int[])
+
+       Deselect items at given indexes in the selection.
+
+       :returns: self
+       :rtype: ItemSelection
+
+   .. js:method:: deselectSelection(ItemSelection)
+
+       Deselect items in other selection.
+
+       :returns: self
+       :rtype: ItemSelection
+
+   .. js:method:: current()
+
+       Deselects all and selects only the items which were selected when the
+       command was triggered.
+
+       See `Selected Items`_.
+
+       :returns: self
+       :rtype: ItemSelection
+
+   .. js:method:: removeAll()
+
+       Delete all items in the selection (if possible).
+
+       :returns: self
+       :rtype: ItemSelection
+
+   .. js:method:: move(row)
+
+       Move all items in the selection to the target row.
+
+       :returns: self
+       :rtype: ItemSelection
+
+   .. js:method:: copy()
+
+       Clone the selection object.
+
+       :returns: cloned object
+       :rtype: ItemSelection
+
+   .. js:method:: rows()
+
+       Returns selected rows.
+
+       :returns: Selected rows
+       :rtype: array of ints
+
+   .. js:method:: itemAtIndex(index)
+
+       Returns item data at given index in the selection.
+
+       :returns: Item data
+       :rtype: :js:class:`Item`
+
+   .. js:method:: setItemAtIndex(index, Item)
+
+       Sets data to the item at given index in the selection.
+
+       :returns: self
+       :rtype: ItemSelection
+
+   .. js:method:: items()
+
+       Return list of data from selected items.
+
+       :returns: Selected item data
+       :rtype: array of :js:class:`Item`
+
+   .. js:method:: setItems(Item[])
+
+       Set data for selected items.
+
+       :returns: self
+       :rtype: ItemSelection
+
+   .. js:method:: itemsFormat(mimeType)
+
+       Return list of data from selected items containing specified MIME type.
+
+       :returns: Selected item data containing only the format
+       :rtype: array of :js:class:`Item`
+
+   .. js:method:: setItemsFormat(mimeType, data)
+
+       Set data for given MIME type for the selected items.
+
+       :returns: self
+       :rtype: ItemSelection
+
 .. js:class:: FinishedCommand
 
    Properties of finished command.
 
-   Properties are:
+   .. js:attribute:: stdout
 
-   -  ``stdout`` - standard output
-   -  ``stderr`` - standard error output
-   -  ``exit_code`` - exit code
+       Standard output
+
+   .. js:attribute:: stderr
+
+       Standard error output
+
+   .. js:attribute:: exit_code
+
+       Exit code
 
 .. js:class:: NetworkReply
 
    Received network reply object.
 
-   Properties are:
+   .. js:attribute:: data
 
-   -  ``data`` - reply data
-   -  ``status`` - HTTP status
-   -  ``error`` - error string (set only if an error occurred)
-   -  ``redirect`` - URL for redirection (set only if redirection is
-      needed)
-   -  ``headers`` - reply headers (array of pairs with header name and
-      header content)
-   -  ``finished`` - true only if request has been completed, false only for
-      unfinished asynchronous requests
+       Reply data
+
+   .. js:attribute:: status
+
+       HTTP status
+
+   .. js:attribute:: error``
+
+       Error string (set only if an error occurred)
+
+   .. js:attribute:: redirect
+
+       URL for redirection (set only if redirection is needed)
+
+   .. js:attribute:: headers
+
+       Reply headers (array of pairs with header name and header content)
+
+   .. js:attribute:: finished
+
+       True only if request has been completed, false only for unfinished
+       asynchronous requests
 
 .. js:class:: Command
 
@@ -1754,48 +2016,48 @@ These MIME types values are assigned to global variables prefixed with
 
    Content for following types is UTF-8 encoded.
 
-.. js:data:: mimeText (text/plain)
+.. js:data:: mimeText
 
-   Data contains plain text content.
+   Data contains plain text content. Value: 'text/plain'.
 
-.. js:data:: mimeHtml (text/html)
+.. js:data:: mimeHtml
 
-   Data contains HTML content.
+   Data contains HTML content. Value: 'text/html'.
 
-.. js:data:: mimeUriList (text/uri-list)
+.. js:data:: mimeUriList
 
-   Data contains list of links to files, web pages etc.
+   Data contains list of links to files, web pages etc. Value: 'text/uri-list'.
 
-.. js:data:: mimeWindowTitle (application/x-copyq-owner-window-title)
+.. js:data:: mimeWindowTitle
 
-   Current window title for copied clipboard.
+   Current window title for copied clipboard. Value: 'application/x-copyq-owner-window-title'.
 
-.. js:data:: mimeItems (application/x-copyq-item)
+.. js:data:: mimeItems
 
-   Serialized items.
+   Serialized items. Value: 'application/x-copyq-item'.
 
-.. js:data:: mimeItemNotes (application/x-copyq-item-notes)
+.. js:data:: mimeItemNotes
 
-   Data contains notes for item.
+   Data contains notes for item. Value: 'application/x-copyq-item-notes'.
 
-.. js:data:: mimeIcon (application/x-copyq-item-icon)
+.. js:data:: mimeIcon
 
-   Data contains icon for item.
+   Data contains icon for item. Value: 'application/x-copyq-item-icon'.
 
-.. js:data:: mimeOwner (application/x-copyq-owner)
+.. js:data:: mimeOwner
 
-   If available, the clipboard was set from CopyQ (from script or copied items).
+   If available, the clipboard was set from CopyQ (from script or copied items). Value: 'application/x-copyq-owner'.
 
    Such clipboard is ignored in CopyQ, i.e. it won't be stored in clipboard
    tab and automatic commands won't be executed on it.
 
-.. js:data:: mimeClipboardMode (application/x-copyq-clipboard-mode)
+.. js:data:: mimeClipboardMode
 
-   Contains ``selection`` if data is from `Linux mouse selection`_.
+   Contains ``selection`` if data is from `Linux mouse selection`_. Value: 'application/x-copyq-clipboard-mode'.
 
-.. js:data:: mimeCurrentTab (application/x-copyq-current-tab)
+.. js:data:: mimeCurrentTab
 
-   Current tab name when invoking command from main window.
+   Current tab name when invoking command from main window. Value: 'application/x-copyq-current-tab'.
 
    Following command print the tab name when invoked from main window:
 
@@ -1804,17 +2066,17 @@ These MIME types values are assigned to global variables prefixed with
        copyq data application/x-copyq-current-tab
        copyq selectedTab
 
-.. js:data:: mimeSelectedItems (application/x-copyq-selected-items)
+.. js:data:: mimeSelectedItems
 
-   Selected items when invoking command from main window.
+   Selected items when invoking command from main window. Value: 'application/x-copyq-selected-items'.
 
-.. js:data:: mimeCurrentItem (application/x-copyq-current-item)
+.. js:data:: mimeCurrentItem
 
-   Current item when invoking command from main window.
+   Current item when invoking command from main window. Value: 'application/x-copyq-current-item'.
 
-.. js:data:: mimeHidden (application/x-copyq-hidden)
+.. js:data:: mimeHidden
 
-   If set to ``1``, the clipboard or item content will be hidden in GUI.
+   If set to ``1``, the clipboard or item content will be hidden in GUI. Value: 'application/x-copyq-hidden'.
 
    This won't hide notes and tags.
 
@@ -1824,9 +2086,9 @@ These MIME types values are assigned to global variables prefixed with
 
        copyq copy application/x-copyq-hidden 1 plain/text "This is secret"
 
-.. js:data:: mimeShortcut (application/x-copyq-shortcut)
+.. js:data:: mimeShortcut
 
-   Application or global shortcut which activated the command.
+   Application or global shortcut which activated the command. Value: 'application/x-copyq-shortcut'.
 
    ::
 
@@ -1834,9 +2096,9 @@ These MIME types values are assigned to global variables prefixed with
        var shortcut = data(mimeShortcut)
        popup("Shortcut Pressed", shortcut)
 
-.. js:data:: mimeColor (application/x-copyq-color)
+.. js:data:: mimeColor
 
-   Item color (same as the one used by themes).
+   Item color (same as the one used by themes). Value: 'application/x-copyq-color'.
 
    Examples::
 
@@ -1844,9 +2106,9 @@ These MIME types values are assigned to global variables prefixed with
        rgba(255,255,0,0.5)
        bg - #000099
 
-.. js:data:: mimeOutputTab (application/x-copyq-output-tab)
+.. js:data:: mimeOutputTab
 
-   Name of the tab where to store new item.
+   Name of the tab where to store new item. Value: 'application/x-copyq-output-tab'.
 
    The clipboard data will be stored in tab with this name after all
    automatic commands are run.

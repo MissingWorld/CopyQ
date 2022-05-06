@@ -29,6 +29,7 @@
 #include <QJSEngine>
 #include <QJSValue>
 #include <QJSValueIterator>
+#include <QStringList>
 #include <QSyntaxHighlighter>
 #include <QTextEdit>
 #include <QPlainTextEdit>
@@ -135,6 +136,7 @@ private:
         Code,
         SingleQuote,
         DoubleQuote,
+        BackTick,
         RegExp,
         Comment
     };
@@ -151,13 +153,13 @@ private:
     void format(int a, int b)
     {
         QTextCharFormat format;
-
-        if (currentBlockState() == SingleQuote || currentBlockState() == DoubleQuote) {
+        const int state = currentBlockState();
+        if (state == SingleQuote || state == DoubleQuote || state == BackTick) {
             format.setForeground(mixColor(m_bgColor, -40, 40, -40));
-        } else if (currentBlockState() == Comment) {
+        } else if (state == Comment) {
             const int x = m_bgColor.lightness() > 100 ? -40 : 40;
             format.setForeground( mixColor(m_bgColor, x, x, x) );
-        } else if (currentBlockState() == RegExp) {
+        } else if (state == RegExp) {
             format.setForeground(mixColor(m_bgColor, 40, -40, -40));
         } else {
             return;
@@ -168,7 +170,7 @@ private:
 
     bool peek(const QString &text, int i, const QString &what)
     {
-        return text.midRef(i, what.size()) == what;
+        return text.mid(i, what.size()) == what;
     }
 
     void highlightBlocks(const QString &text)
@@ -192,6 +194,11 @@ private:
                 }
             } else if (currentBlockState() == DoubleQuote) {
                 if (c == '"') {
+                    format(a, i);
+                    setCurrentBlockState(Code);
+                }
+            } else if (currentBlockState() == BackTick) {
+                if (c == '`') {
                     format(a, i);
                     setCurrentBlockState(Code);
                 }
@@ -229,6 +236,9 @@ private:
             } else if (c == '"') {
                 a = i;
                 setCurrentBlockState(DoubleQuote);
+            } else if (c == '`') {
+                a = i;
+                setCurrentBlockState(BackTick);
             } else if (c == '/') {
                 a = i;
                 setCurrentBlockState(RegExp);
@@ -253,7 +263,7 @@ bool isPublicName(const QString &name)
     return !name.startsWith('_');
 }
 
-QStringList getScriptableObjects()
+QList<QString> getScriptableObjects()
 {
     QJSEngine engine;
     Scriptable scriptable(&engine, nullptr);
@@ -261,7 +271,7 @@ QStringList getScriptableObjects()
     QJSValue globalObject = engine.globalObject();
     QJSValueIterator it(globalObject);
 
-    QStringList result;
+    QList<QString> result;
     while (it.hasNext()) {
         it.next();
         if ( isPublicName(it.name()) )
@@ -273,42 +283,45 @@ QStringList getScriptableObjects()
 
 } // namespace
 
-QStringList scriptableKeywords()
+QList<QString> scriptableKeywords()
 {
     return {
         QStringLiteral("arguments"),
         QStringLiteral("break"),
-        QStringLiteral("do"),
-        QStringLiteral("instanceof"),
-        QStringLiteral("typeof"),
         QStringLiteral("case"),
-        QStringLiteral("else"),
-        QStringLiteral("new"),
-        QStringLiteral("var"),
         QStringLiteral("catch"),
-        QStringLiteral("finally"),
-        QStringLiteral("return"),
-        QStringLiteral("void"),
+        QStringLiteral("const"),
         QStringLiteral("continue"),
-        QStringLiteral("for"),
-        QStringLiteral("switch"),
-        QStringLiteral("while"),
         QStringLiteral("debugger"),
-        QStringLiteral("function"),
-        QStringLiteral("this"),
-        QStringLiteral("with"),
         QStringLiteral("default"),
-        QStringLiteral("if"),
-        QStringLiteral("throw"),
         QStringLiteral("delete"),
+        QStringLiteral("do"),
+        QStringLiteral("else"),
+        QStringLiteral("finally"),
+        QStringLiteral("for"),
+        QStringLiteral("function"),
+        QStringLiteral("if"),
         QStringLiteral("in"),
+        QStringLiteral("instanceof"),
+        QStringLiteral("let"),
+        QStringLiteral("new"),
+        QStringLiteral("of"),
+        QStringLiteral("return"),
+        QStringLiteral("switch"),
+        QStringLiteral("this"),
+        QStringLiteral("throw"),
         QStringLiteral("try"),
+        QStringLiteral("typeof"),
+        QStringLiteral("var"),
+        QStringLiteral("void"),
+        QStringLiteral("while"),
+        QStringLiteral("with"),
     };
 }
 
-QStringList scriptableProperties()
+QList<QString> scriptableProperties()
 {
-    QStringList result;
+    QList<QString> result;
 
     QMetaObject scriptableMetaObject = Scriptable::staticMetaObject;
     for (int i = 0; i < scriptableMetaObject.propertyCount(); ++i) {
@@ -322,9 +335,9 @@ QStringList scriptableProperties()
     return result;
 }
 
-QStringList scriptableFunctions()
+QList<QString> scriptableFunctions()
 {
-    QStringList result;
+    QList<QString> result;
 
     QMetaObject scriptableMetaObject = Scriptable::staticMetaObject;
     for (int i = 0; i < scriptableMetaObject.methodCount(); ++i) {
@@ -342,9 +355,9 @@ QStringList scriptableFunctions()
     return result;
 }
 
-QStringList scriptableObjects()
+QList<QString> scriptableObjects()
 {
-    static const QStringList result = getScriptableObjects();
+    static const QList<QString> result = getScriptableObjects();
     return result;
 }
 

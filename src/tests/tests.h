@@ -123,6 +123,8 @@ private slots:
     void commandsImportExportCommands();
     void commandsImportExportCommandsFixIndentation();
 
+    void commandsAddCommandsRegExp();
+
     void commandScreenshot();
 
     void commandNotification();
@@ -151,6 +153,10 @@ private slots:
     void classFile();
     void classDir();
     void classTemporaryFile();
+    void classItemSelection();
+    void classItemSelectionGetCurrent();
+    void classItemSelectionByteArray();
+    void classSettings();
     void calledWithInstance();
 
     void pipingCommands();
@@ -168,6 +174,7 @@ private slots:
     void searchItems();
     void searchItemsAndSelect();
     void searchRowNumber();
+    void searchAccented();
     void copyItems();
 
     void createTabDialog();
@@ -188,6 +195,7 @@ private slots:
     void action();
     void insertRemoveItems();
     void renameTab();
+    void renameClipboardTab();
     void importExportTab();
 
     void removeAllFoundItems();
@@ -221,6 +229,8 @@ private slots:
 
     void configPathEnvVariable();
 
+    void configTabs();
+
     void shortcutCommand();
     void shortcutCommandOverrideEnter();
     void shortcutCommandMatchInput();
@@ -252,6 +262,8 @@ private slots:
     void scriptCommandEndingWithComment();
     void scriptCommandWithError();
     void displayCommand();
+
+    void synchronizeInternalCommands();
 
     void queryKeyboardModifiersCommand();
     void pointerPositionCommand();

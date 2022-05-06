@@ -128,7 +128,7 @@ QString ScriptableByteArray::toLatin1String() const
 
 QJSValue ScriptableByteArray::length() const
 {
-    return m_self.length();
+    return static_cast<int>(m_self.length());
 }
 
 void ScriptableByteArray::setLength(QJSValue size)
@@ -144,4 +144,23 @@ QJSEngine *ScriptableByteArray::engine() const
 QJSValue ScriptableByteArray::newByteArray(const QByteArray &bytes) const
 {
     return engine()->newQObject( new ScriptableByteArray(bytes) );
+}
+
+const QByteArray *getByteArray(const QJSValue &value)
+{
+    const auto obj1 = value.toQObject();
+    const auto obj = qobject_cast<ScriptableByteArray*>(obj1);
+    return obj ? obj->data() : nullptr;
+}
+
+QByteArray toByteArray(const QJSValue &value)
+{
+    const auto byteArray = qobject_cast<ScriptableByteArray*>(value.toQObject());
+    return byteArray ? *byteArray->data() : value.toString().toUtf8();
+}
+
+QString toString(const QJSValue &value)
+{
+    const QByteArray *bytes = getByteArray(value);
+    return (bytes == nullptr) ? value.toString() : getTextData(*bytes);
 }

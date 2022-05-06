@@ -46,6 +46,7 @@
 #include <QAction>
 #include <QApplication>
 #include <QApplicationStateChangeEvent>
+#include <QFile>
 #include <QKeyEvent>
 #include <QMenu>
 #include <QMessageBox>
@@ -101,9 +102,9 @@ void setTabWidth(QTextEdit *editor, int spaces)
 void migrateCommands(const QString &commandConfigPath)
 {
     Settings oldSettings;
-    const auto oldCommands = loadCommands(oldSettings.settingsData());
+    const auto oldCommands = loadCommands(&oldSettings.constSettingsData());
 
-    const QString commandConfigPathNew = commandConfigPath + ".new";
+    const QString commandConfigPathNew = commandConfigPath + QStringLiteral(".new");
     {
         Settings newSettings(commandConfigPathNew);
         saveCommands(oldCommands, newSettings.settingsData());
@@ -134,10 +135,14 @@ void restoreConfiguration()
     Settings().restore();
 
     const QString commandConfigPath = getConfigurationFilePath("-commands.ini");
-    if ( QFile::exists(commandConfigPath) )
+    if ( QFile::exists(commandConfigPath) ) {
+        const QString staleCommandConfigPathBakup =
+            commandConfigPath + QStringLiteral(".new.bak");
+        QFile::remove(staleCommandConfigPathBakup);
         Settings(commandConfigPath).restore();
-    else
+    } else {
         migrateCommands(commandConfigPath);
+    }
 }
 
 } // namespace
@@ -155,10 +160,10 @@ ClipboardServer::ClipboardServer(QApplication *app, const QString &sessionName)
     m_server = new Server(serverName, this);
 
     if ( m_server->isListening() ) {
-        ::createSessionMutex();
         Settings::canModifySettings = true;
         restoreConfiguration();
         App::installTranslator();
+        qApp->setLayoutDirection(QLocale().textDirection());
         COPYQ_LOG("Server \"" + serverName + "\" started.");
     } else {
         App::installTranslator();
@@ -177,7 +182,11 @@ ClipboardServer::ClipboardServer(QApplication *app, const QString &sessionName)
             QString::fromLatin1("CopyQ-%1").arg(sessionName));
     }
 
+    QGuiApplication::setDesktopFileName(QStringLiteral("com.github.hluk.copyq"));
+
+#if QT_VERSION < QT_VERSION_CHECK(6,0,0)
     QCoreApplication::setAttribute(Qt::AA_UseHighDpiPixmaps, true);
+#endif
 
     QApplication::setQuitOnLastWindowClosed(false);
 
@@ -202,7 +211,7 @@ ClipboardServer::ClipboardServer(QApplication *app, const QString &sessionName)
 
     connect( qApp, &QGuiApplication::commitDataRequest, this, &ClipboardServer::onCommitData );
     connect( qApp, &QGuiApplication::saveStateRequest, this, &ClipboardServer::onSaveState );
-#if QT_VERSION >= QT_VERSION_CHECK(5,6,0)
+#if QT_VERSION < QT_VERSION_CHECK(6,0,0)
     qApp->setFallbackSessionManagementEnabled(false);
 #endif
 
@@ -220,7 +229,10 @@ ClipboardServer::ClipboardServer(QApplication *app, const QString &sessionName)
     connect( m_wnd, &MainWindow::commandsSaved,
              this, &ClipboardServer::onCommandsSaved );
 
-    loadSettings();
+    {
+        AppConfig appConfig;
+        loadSettings(&appConfig);
+    }
 
     m_wnd->setCurrentTab(0);
     m_wnd->enterBrowseMode();
@@ -237,7 +249,10 @@ ClipboardServer::ClipboardServer(QApplication *app, const QString &sessionName)
         m_actionDataToSend.clear();
     });
 
-    initSingleShotTimer(&m_updateThemeTimer, 1000, this, &ClipboardServer::loadSettings);
+    initSingleShotTimer(&m_updateThemeTimer, 1000, this, [this](){
+        AppConfig appConfig;
+        loadSettings(&appConfig);
+    });
 
     startMonitoring();
 
@@ -691,20 +706,18 @@ bool ClipboardServer::eventFilter(QObject *object, QEvent *ev)
     return false;
 }
 
-void ClipboardServer::loadSettings()
+void ClipboardServer::loadSettings(AppConfig *appConfig)
 {
     if (!m_sharedData->itemFactory)
         return;
 
     COPYQ_LOG("Loading configuration");
 
-    QSettings settings;
+    QSettings &settings = appConfig->settings().constSettingsData();
 
     m_sharedData->itemFactory->loadItemFactorySettings(&settings);
 
-    AppConfig appConfig;
-
-    const QString styleName = appConfig.option<Config::style>();
+    const QString styleName = appConfig->option<Config::style>();
     if ( !styleName.isEmpty() ) {
         log( QString("Style: %1").arg(styleName) );
         QStyle *style = QStyleFactory::create(styleName);
@@ -720,26 +733,26 @@ void ClipboardServer::loadSettings()
     m_sharedData->theme.loadTheme(settings);
     settings.endGroup();
 
-    m_sharedData->editor = appConfig.option<Config::editor>();
-    m_sharedData->maxItems = appConfig.option<Config::maxitems>();
-    m_sharedData->textWrap = appConfig.option<Config::text_wrap>();
-    m_sharedData->viMode = appConfig.option<Config::vi>();
-    m_sharedData->saveOnReturnKey = !appConfig.option<Config::edit_ctrl_return>();
-    m_sharedData->moveItemOnReturnKey = appConfig.option<Config::move>();
-    m_sharedData->showSimpleItems = appConfig.option<Config::show_simple_items>();
-    m_sharedData->numberSearch = appConfig.option<Config::number_search>();
-    m_sharedData->minutesToExpire = appConfig.option<Config::expire_tab>();
-    m_sharedData->saveDelayMsOnItemAdded = appConfig.option<Config::save_delay_ms_on_item_added>();
-    m_sharedData->saveDelayMsOnItemModified = appConfig.option<Config::save_delay_ms_on_item_modified>();
-    m_sharedData->saveDelayMsOnItemRemoved = appConfig.option<Config::save_delay_ms_on_item_removed>();
-    m_sharedData->saveDelayMsOnItemMoved = appConfig.option<Config::save_delay_ms_on_item_moved>();
-    m_sharedData->saveDelayMsOnItemEdited = appConfig.option<Config::save_delay_ms_on_item_edited>();
-    m_sharedData->rowIndexFromOne = appConfig.option<Config::row_index_from_one>();
+    m_sharedData->editor = appConfig->option<Config::editor>();
+    m_sharedData->maxItems = appConfig->option<Config::maxitems>();
+    m_sharedData->textWrap = appConfig->option<Config::text_wrap>();
+    m_sharedData->viMode = appConfig->option<Config::vi>();
+    m_sharedData->saveOnReturnKey = !appConfig->option<Config::edit_ctrl_return>();
+    m_sharedData->moveItemOnReturnKey = appConfig->option<Config::move>();
+    m_sharedData->showSimpleItems = appConfig->option<Config::show_simple_items>();
+    m_sharedData->numberSearch = appConfig->option<Config::number_search>();
+    m_sharedData->minutesToExpire = appConfig->option<Config::expire_tab>();
+    m_sharedData->saveDelayMsOnItemAdded = appConfig->option<Config::save_delay_ms_on_item_added>();
+    m_sharedData->saveDelayMsOnItemModified = appConfig->option<Config::save_delay_ms_on_item_modified>();
+    m_sharedData->saveDelayMsOnItemRemoved = appConfig->option<Config::save_delay_ms_on_item_removed>();
+    m_sharedData->saveDelayMsOnItemMoved = appConfig->option<Config::save_delay_ms_on_item_moved>();
+    m_sharedData->saveDelayMsOnItemEdited = appConfig->option<Config::save_delay_ms_on_item_edited>();
+    m_sharedData->rowIndexFromOne = appConfig->option<Config::row_index_from_one>();
 
     m_wnd->loadSettings(settings, appConfig);
 
-    m_textTabSize = appConfig.option<Config::text_tab_width>();
-    m_saveOnDeactivate = appConfig.option<Config::save_on_app_deactivated>();
+    m_textTabSize = appConfig->option<Config::text_tab_width>();
+    m_saveOnDeactivate = appConfig->option<Config::save_on_app_deactivated>();
 
     if (m_monitor) {
         stopMonitoring();
@@ -747,13 +760,13 @@ void ClipboardServer::loadSettings()
     }
 
     m_sharedData->notifications->setNativeNotificationsEnabled(
-        appConfig.option<Config::native_notifications>() );
+        appConfig->option<Config::native_notifications>() );
     m_sharedData->notifications->setNotificationOpacity(
         m_sharedData->theme.color("notification_bg").alphaF() );
     m_sharedData->notifications->setNotificationStyleSheet(
         m_sharedData->theme.getNotificationStyleSheet() );
 
-    int id = appConfig.option<Config::notification_position>();
+    int id = appConfig->option<Config::notification_position>();
     NotificationDaemon::Position position;
     switch (id) {
     case 0: position = NotificationDaemon::Top; break;
@@ -765,12 +778,12 @@ void ClipboardServer::loadSettings()
     }
     m_sharedData->notifications->setPosition(position);
 
-    const int x = appConfig.option<Config::notification_horizontal_offset>();
-    const int y = appConfig.option<Config::notification_vertical_offset>();
+    const int x = appConfig->option<Config::notification_horizontal_offset>();
+    const int y = appConfig->option<Config::notification_vertical_offset>();
     m_sharedData->notifications->setOffset(x, y);
 
-    const int w = appConfig.option<Config::notification_maximum_width>();
-    const int h = appConfig.option<Config::notification_maximum_height>();
+    const int w = appConfig->option<Config::notification_maximum_width>();
+    const int h = appConfig->option<Config::notification_maximum_height>();
     m_sharedData->notifications->setMaximumSize(w, h);
 
     m_sharedData->notifications->updateNotificationWidgets();

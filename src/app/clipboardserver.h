@@ -22,6 +22,7 @@
 
 #include "app.h"
 #include "common/clipboardmode.h"
+#include "common/command.h"
 #include "common/server.h"
 #include "common/clientsocket.h"
 #include "gui/clipboardbrowsershared.h"
@@ -32,6 +33,7 @@
 
 class Action;
 class ActionHandler;
+class AppConfig;
 class ItemFactory;
 class MainWindow;
 class NotificationDaemon;
@@ -40,7 +42,6 @@ class Server;
 class QxtGlobalShortcut;
 class QApplication;
 class QSessionManager;
-struct Command;
 struct NotificationButton;
 
 /**
@@ -72,7 +73,7 @@ public:
     void createGlobalShortcut(const QKeySequence &shortcut, const Command &command);
 
     /** Load settings. */
-    void loadSettings();
+    void loadSettings(AppConfig *appConfig);
 
 signals:
     void closeClients();

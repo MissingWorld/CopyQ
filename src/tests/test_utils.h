@@ -66,14 +66,19 @@
 #define SKIP(MESSAGE) QSKIP(MESSAGE, SkipAll)
 
 #define WAIT_ON_OUTPUT(ARGUMENTS, OUTPUT) \
-    TEST( m_test->waitOnOutput((Args() << ARGUMENTS), (OUTPUT)) )
+    TEST( m_test->waitOnOutput((Args() << ARGUMENTS), toByteArray(OUTPUT)) )
 
 #define SKIP_ON_ENV(ENV) \
     if ( qgetenv(ENV) == "1" ) \
         SKIP("Unset " ENV " to run the tests")
 
 /// Interval to wait (in ms) before and after setting clipboard.
+#ifdef Q_OS_MAC
+// macOS seems to require larger delay before/after setting clipboard
 const int waitMsSetClipboard = 1000;
+#else
+const int waitMsSetClipboard = 250;
+#endif
 
 /// Interval to wait (in ms) for pasting clipboard.
 const int waitMsPasteClipboard = 1000;

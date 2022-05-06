@@ -155,7 +155,7 @@ void runMultiple(Fn1 f1, Fn2 f2)
 
 bool testStderr(const QByteArray &stderrData, TestInterface::ReadStderrFlag flag = TestInterface::ReadErrors)
 {
-    static const QRegularExpression reFailure(".*(Warning:|ERROR:|ASSERT|ScriptError:).*", QRegularExpression::CaseInsensitiveOption);
+    static const QRegularExpression reFailure("(Warning:|ERROR:|ASSERT|ScriptError:).*", QRegularExpression::CaseInsensitiveOption);
     const QLatin1String scriptError("ScriptError:");
 
     const auto plain = [](const char *str){
@@ -167,6 +167,8 @@ bool testStderr(const QByteArray &stderrData, TestInterface::ReadStderrFlag flag
     // Ignore exceptions and errors from clients in application log
     // (these are expected in some tests).
     static const std::vector<QRegularExpression> ignoreList{
+        plain("[EXPECTED-IN-TEST]"),
+
         regex(R"(CopyQ Note \[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}\] <Client-[^\n]*)"),
 
         // X11 (Linux)
@@ -190,6 +192,8 @@ bool testStderr(const QByteArray &stderrData, TestInterface::ReadStderrFlag flag
         plain("ERROR: QtCritical: QWindowsPipeWriter: asynchronous write failed. (The pipe has been ended.)"),
 
         plain("[kf.notifications] QtWarning: Received a response for an unknown notification."),
+        // KStatusNotifierItem
+        plain("[kf.windowsystem] QtWarning: Could not find any platform plugin"),
 
         regex("QtWarning: QTemporaryDir: Unable to remove .* most likely due to the presence of read-only files."),
 
@@ -493,10 +497,7 @@ public:
             return QByteArray();
 
         waitFor(waitMsSetClipboard);
-
         clipboard()->setData( mode, createDataMap(mime, bytes) );
-
-        waitFor(waitMsSetClipboard);
         return verifyClipboard(bytes, mime);
     }
 
@@ -504,9 +505,11 @@ public:
     {
         PerformanceTimer perf;
 
-        SleepTimer t(waitMsSetClipboard * 5);
+        SleepTimer t(5000);
+        QByteArray actualBytes;
         do {
-            if ( exact ? getClipboard(mime) == data : getClipboard(mime).contains(data) ) {
+            actualBytes = getClipboard(mime);
+            if ( exact ? actualBytes == data : actualBytes.contains(data) ) {
                 perf.printPerformance("verifyClipboard", QStringList() << QString::fromUtf8(data) << mime);
                 waitFor(waitMsSetClipboard);
                 RETURN_ON_ERROR( readServerErrors(), "Failed to set or test clipboard content" );
@@ -514,7 +517,6 @@ public:
             }
         } while (t.sleep());
 
-        const QByteArray actualBytes = getClipboard(mime);
         return QString::fromLatin1("Unexpected clipboard data for MIME \"%1\":")
                 .arg(mime).toUtf8()
                 + decorateOutput("Unexpected content", actualBytes)
@@ -526,7 +528,9 @@ public:
     {
         if (m_server) {
             QCoreApplication::processEvents();
-            const QByteArray output = readLogFile(maxReadLogSize).toUtf8();
+            QByteArray output = readLogFile(maxReadLogSize);
+            if ( !m_ignoreError.isEmpty() )
+                output.replace(m_ignoreError, "[EXPECTED-IN-TEST] " + m_ignoreError);
             if ( flag == ReadAllStderr || !testStderr(output, flag) )
               return decorateOutput("Server STDERR", output);
         }
@@ -650,8 +654,14 @@ public:
 
     QByteArray cleanup() override
     {
+        m_ignoreError.clear();
         addFailedTest();
         return QByteArray();
+    }
+
+    void setIgnoreError(const QByteArray &ignoreError) override
+    {
+        m_ignoreError = ignoreError;
     }
 
     QString shortcutToRemove() override
@@ -770,6 +780,8 @@ private:
     QStringList m_failed;
 
     PlatformClipboardPtr m_clipboard;
+
+    QByteArray m_ignoreError;
 };
 
 QString keyNameFor(QKeySequence::StandardKey standardKey)
@@ -787,9 +799,9 @@ int count(const QStringList &items, const QString &pattern)
     return count;
 }
 
-QStringList splitLines(const QString &nativeText)
+QStringList splitLines(const QByteArray &nativeText)
 {
-    return nativeText.split(QRegularExpression("\r\n|\n|\r"));
+    return QString::fromUtf8(nativeText).split(QRegularExpression("\r\n|\n|\r"));
 }
 
 } // namespace
@@ -887,7 +899,7 @@ void Tests::commandVersion()
 
     const QString version = QString::fromUtf8(stdoutActual);
     // Version contains application name and version.
-    QVERIFY( version.contains(QRegularExpression("\\bCopyQ\\b.*" + QRegularExpression::escape(COPYQ_VERSION))) );
+    QVERIFY( version.contains(QRegularExpression("\\bCopyQ\\b.*" + QRegularExpression::escape(versionString))) );
     // Version contains Qt version.
     QVERIFY( version.contains(QRegularExpression("\\bQt:\\s+\\d")) );
 }
@@ -1256,6 +1268,32 @@ void Tests::commandDialog()
         [&]() { RUN(Args() << "keys" << "focus::QCheckBox in :QDialog" << "ENTER", ""); }
     );
 #endif
+
+    // Verify that special argument ".title" changes dialog's object name
+    // so that geometry can be stored.
+    RUN(Args() << "keys" << clipboardBrowserId, "");
+    runMultiple(
+        [&]() { RUN(WITH_TIMEOUT "dialog('.title', 'test', 'text')", ""); },
+        [&]() { RUN(Args() << "keys" << "focus::QLineEdit in dialog_test:QDialog" << "ESCAPE", ""); }
+    );
+
+    RUN(Args() << "keys" << clipboardBrowserId, "");
+    const QByteArray script = R"(
+        dialog(
+            '.width', 100,
+            '.height', 100,
+            '.x', 10,
+            '.y', 10,
+            '.style', 'background: red',
+            '.icon', '',
+            '.label', 'TEST',
+            'text', 'DEFAULT',
+        )
+    )";
+    runMultiple(
+        [&]() { RUN(WITH_TIMEOUT + script, "DEFAULT\n"); },
+        [&]() { RUN(Args() << "keys" << "focus::QLineEdit in :QDialog" << "ENTER", ""); }
+    );
 }
 
 void Tests::commandDialogCloseOnDisconnect()
@@ -1681,6 +1719,31 @@ void Tests::commandsImportExportCommandsFixIndentation()
                 "Command=\"\r\n    1\r\n    2\r\n    3\"";
         RUN("eval" << "importCommands(arguments[1])[0].cmd" << "--" << commands, "1\n2\n3\n");
     }
+}
+
+void Tests::commandsAddCommandsRegExp()
+{
+    const QString commands =
+            "[Command]\n"
+            "Match=x\n";
+
+    // Ensure there is a basic RegExp support.
+    RUN("/test/", "/test/\n");
+    RUN("/test/.source", "test\n");
+
+    RUN("eval" << "exportCommands(importCommands(arguments[1]))" << "--" << commands, commands);
+    RUN("eval" << "Object.prototype.toString.call(importCommands(arguments[1])[0].re)" << "--" << commands, "[object RegExp]\n");
+    RUN("eval" << "Object.prototype.toString.call(importCommands(arguments[1])[0].wndre)" << "--" << commands, "[object RegExp]\n");
+    RUN("eval" << "importCommands(arguments[1])[0].re" << "--" << commands, "/x/\n");
+    RUN("eval" << "importCommands(arguments[1])[0].wndre" << "--" << commands, "/(?:)/\n");
+
+    RUN("eval" << "addCommands(importCommands(arguments[1]))" << "--" << commands, "");
+    RUN("keys" << commandDialogListId << "Enter" << clipboardBrowserId, "");
+
+    RUN("exportCommands(commands())", commands);
+    RUN("commands()[0].name", "\n");
+    RUN("commands()[0].re", "/x/\n");
+    RUN("commands()[0].wndre", "/(?:)/\n");
 }
 
 void Tests::commandScreenshot()
@@ -2114,6 +2177,197 @@ void Tests::classTemporaryFile()
     RUN("TemporaryFile().fileTemplate()", QDir::temp().filePath("copyq.test.XXXXXX") + "\n");
 }
 
+void Tests::classItemSelection()
+{
+    const auto tab1 = testTab(1);
+    const Args args = Args("tab") << tab1 << "separator" << ",";
+    const QString outRows("ItemSelection(tab=\"" + tab1 + "\", rows=[%1])\n");
+
+    RUN(args << "add" << "C" << "B" << "A", "");
+    RUN(args << "ItemSelection().length", "0\n");
+    RUN("ItemSelection('" + tab1 + "').length", "0\n");
+    RUN(args << "ItemSelection().selectAll().length", "3\n");
+    RUN("ItemSelection('" + tab1 + "').selectAll().length", "3\n");
+
+    RUN(args << "a = ItemSelection(); b = a; a === b", "true\n");
+    RUN(args << "a = ItemSelection(); b = a.selectAll(); a === b", "true\n");
+
+    RUN(args << "ItemSelection().selectAll().str()", outRows.arg("0..2"));
+    RUN(args << "ItemSelection().selectRemovable().str()", outRows.arg("0..2"));
+    RUN(args << "ItemSelection().selectRemovable().removeAll().str()", outRows.arg(""));
+    RUN(args << "read(0,1,2)", ",,");
+
+    RUN(args << "add" << "C" << "B" << "A", "");
+    RUN(args << "ItemSelection().select(/A|C/).str()", outRows.arg("0,2"));
+    RUN(args << "ItemSelection().select(/a|c/i).str()", outRows.arg("0,2"));
+    RUN(args << "ItemSelection().select(/A/).select(/C/).str()", outRows.arg("0,2"));
+    RUN(args << "ItemSelection().select(/C/).select(/A/).str()", outRows.arg("2,0"));
+    RUN(args << "ItemSelection().select(/A|C/).invert().str()", outRows.arg("1"));
+
+    RUN(args << "ItemSelection().select(/A|C/).deselectIndexes([0]).str()", outRows.arg("2"));
+    RUN(args << "ItemSelection().select(/A|C/).deselectIndexes([1]).str()", outRows.arg("0"));
+    RUN(args << "ItemSelection().select(/A|C/).deselectIndexes([0,1]).str()", outRows.arg(""));
+    RUN(args << "ItemSelection().select(/A|C/).deselectSelection(ItemSelection().select(/A/)).str()", outRows.arg("2"));
+    RUN(args << "ItemSelection().select(/A|C/).deselectSelection(ItemSelection().select(/C/)).str()", outRows.arg("0"));
+    RUN(args << "ItemSelection().select(/A|C/).deselectSelection(ItemSelection().selectAll()).str()", outRows.arg(""));
+
+    RUN(args << "a = ItemSelection().select(/a/i); b = a.copy(); a !== b", "true\n");
+    RUN(args << "a = ItemSelection().select(/a/i); b = a.copy(); a.str() == b.str()", "true\n");
+    RUN(args << "a = ItemSelection().select(/a|b/i); b = a.copy(); b.select(/C/); [a.rows(), '', b.rows()]", "0\n1\n\n0\n1\n2\n");
+
+    RUN(args << "s = ItemSelection().selectAll(); insert(1, 'X'); insert(3, 'Y'); s.invert().str()", outRows.arg("1,3"));
+
+    RUN(args << "ItemSelection().select(/a/i).invert().removeAll().str()", outRows.arg(""));
+    RUN(args << "read(0,1,2)", "A,,");
+
+    RUN(args << "ItemSelection().selectAll().removeAll().str()", outRows.arg(""));
+    RUN(args << "read(0,1,2)", ",,");
+
+    RUN(args << "write('application/x-tst', 'ghi')", "");
+    RUN(args << "write('application/x-tst', 'def')", "");
+    RUN(args << "write('application/x-tst', 'abc')", "");
+    RUN(args << "read('application/x-tst',0,1,2)", "abc,def,ghi");
+    RUN(args << "ItemSelection().select(/e/, 'application/x-tst').str()", outRows.arg("1"));
+    RUN(args << "ItemSelection().select(/e/, 'application/x-tst').removeAll().str()", outRows.arg(""));
+    RUN(args << "read('application/x-tst',0,1,2)", "abc,ghi,");
+
+    RUN(args << "ItemSelection().selectAll().itemAtIndex(0)['application/x-tst']", "abc\n");
+    RUN(args << "ItemSelection().selectAll().itemAtIndex(1)['application/x-tst']", "ghi\n");
+    RUN(args << "ItemSelection().select(/h/, 'application/x-tst').itemAtIndex(0)['application/x-tst']", "ghi\n");
+    RUN(args << "ItemSelection().select(/h/, 'application/x-tst').itemAtIndex(1)['application/x-tst'] == undefined", "true\n");
+
+    RUN(args << "ItemSelection().select(/ghi/, 'application/x-tst').setItemAtIndex(0, {'application/x-tst': 'def'}).str()",
+        outRows.arg("1"));
+    RUN(args << "read('application/x-tst',0,1,2)", "abc,def,");
+
+    RUN(args << "d = ItemSelection().selectAll().items(); [d.length, d[0]['application/x-tst'], d[1]['application/x-tst']]", "2\nabc\ndef\n");
+    RUN(args << "ItemSelection().selectAll().setItems([{'application/x-tst': 'xyz'}]).str()", outRows.arg("0,1"));
+    RUN(args << "read('application/x-tst',0,1,2)", "xyz,def,");
+
+    RUN(args << "ItemSelection().selectAll().setItemsFormat(mimeItemNotes, 'test1').str()", outRows.arg("0,1"));
+    RUN(args << "read(mimeItemNotes,0,1,2)", "test1,test1,");
+    RUN(args << "read('application/x-tst',0,1,2)", "xyz,def,");
+
+    RUN(args << "ItemSelection().selectAll().setItems([{'application/x-tst': ByteArray('abc')}]).str()", outRows.arg("0,1"));
+    RUN(args << "read('application/x-tst',0,1,2)", "abc,def,");
+
+    RUN(args << "ItemSelection().selectAll().setItemsFormat(mimeItemNotes, ByteArray('test2')).str()", outRows.arg("0,1"));
+    RUN(args << "read(mimeItemNotes,0,1,2)", "test2,test2,");
+    RUN(args << "read('application/x-tst',0,1,2)", "abc,def,");
+
+    RUN(args << "ItemSelection().selectAll().itemsFormat(mimeItemNotes)", "test2\ntest2\n");
+    RUN(args << "ItemSelection().selectAll().itemsFormat('application/x-tst')", "abc\ndef\n");
+    RUN(args << "ItemSelection().selectAll().itemsFormat(ByteArray('application/x-tst'))", "abc\ndef\n");
+
+    RUN(args << "ItemSelection().selectAll().setItemsFormat(mimeItemNotes, undefined).str()", outRows.arg("0,1"));
+    RUN(args << "read(mimeItemNotes,0,1,2)", ",,");
+    RUN(args << "read('application/x-tst',0,1,2)", "abc,def,");
+
+    RUN(args << "ItemSelection().selectAll().removeAll().str()", outRows.arg(""));
+    RUN(args << "add" << "C" << "B" << "A", "");
+    RUN(args << "ItemSelection().select(/C/).move(1).str()", outRows.arg("1"));
+    RUN(args << "read(0,1,2)", "A,C,B");
+    RUN(args << "ItemSelection().select(/B/).select(/C/).move(1).str()", outRows.arg("2,1"));
+    RUN(args << "read(0,1,2)", "A,C,B");
+    RUN(args << "ItemSelection().select(/A/).move(2).str()", outRows.arg("1"));
+    RUN(args << "read(0,1,2)", "C,A,B");
+    RUN(args << "ItemSelection().select(/C/).select(/B/).move(2).str()", outRows.arg("1,2"));
+    RUN(args << "read(0,1,2)", "A,C,B");
+
+    RUN(args << "change(1, mimeItemNotes, 'NOTE'); read(mimeItemNotes,0,1,2)", ",NOTE,");
+    RUN(args << "ItemSelection().select(/.*/, mimeItemNotes).str()", outRows.arg("1"));
+    RUN(args << "ItemSelection().select(undefined, mimeItemNotes).str()", outRows.arg("0,2"));
+
+    // Match nothing if select() argument is not a regular expression.
+    m_test->setIgnoreError("QtWarning: QString::contains: invalid QRegularExpression object");
+    RUN(args << "ItemSelection().select('A').str()", outRows.arg(""));
+    m_test->setIgnoreError(QByteArray());
+}
+
+void Tests::classItemSelectionGetCurrent()
+{
+    const auto tab1 = testTab(1);
+    const Args args = Args("tab") << tab1 << "separator" << ",";
+    RUN("setCurrentTab" << tab1, "");
+
+    RUN(args << "add" << "C" << "B" << "A", "");
+    RUN(args << "ItemSelection().current().str()", "ItemSelection(tab=\"\", rows=[])\n");
+
+    RUN("setCommands([{name: 'test', inMenu: true, shortcuts: ['Ctrl+F1'], cmd: 'copyq: add(ItemSelection().current().str())'}])", "");
+    RUN("keys" << "CTRL+F1", "");
+    WAIT_ON_OUTPUT(args << "read(0)", "ItemSelection(tab=\"" + tab1 + "\", rows=[0])");
+    RUN("keys" << "END" << "SHIFT+UP" << "CTRL+F1", "");
+    WAIT_ON_OUTPUT(args << "read(0)", "ItemSelection(tab=\"" + tab1 + "\", rows=[2,3])");
+}
+
+void Tests::classItemSelectionByteArray()
+{
+    const auto tab1 = testTab(1);
+    const Args args = Args("tab") << tab1 << "separator" << ",";
+    RUN("setCurrentTab" << tab1, "");
+
+    RUN(args << "add" << "C" << "B" << "A", "");
+    RUN(args << "ByteArray(ItemSelection().selectAll().itemAtIndex(0)[mimeText])", "A");
+    RUN(args << "str(ItemSelection().selectAll().itemAtIndex(0)[mimeText])", "A\n");
+    RUN(args << "write(0, [ItemSelection().selectAll().itemAtIndex(2)])"
+             << "read(mimeText, 0)", "C");
+}
+
+void Tests::classSettings()
+{
+    TemporaryFile configFile;
+    const QString fileName = configFile.fileName();
+
+    RUN("eval" << "s=Settings(str(arguments[1])); print(s.fileName())" << fileName, fileName);
+    RUN("eval" << "s=Settings(str(arguments[1])); s.isWritable() === true" << fileName, "true\n");
+
+    RUN("eval" << "s=Settings(str(arguments[1])); s.contains('o1')" << fileName, "false\n");
+    RUN("eval" << "s=Settings(str(arguments[1])); s.setValue('o1', 1); s.sync(); s.contains('o1')" << fileName, "true\n");
+    RUN("eval" << "s=Settings(str(arguments[1])); s.value('o1')" << fileName, "1\n");
+
+    RUN("eval" << "s=Settings(str(arguments[1])); s.setValue('o2', 2)" << fileName, "");
+    RUN("eval" << "s=Settings(str(arguments[1])); s.value('o2')" << fileName, "2\n");
+
+    RUN("eval" << "s=Settings(str(arguments[1])); s.setValue('o2', [1,2,3])" << fileName, "");
+    RUN("eval" << "s=Settings(str(arguments[1])); s.value('o2')[0]" << fileName, "1\n");
+    RUN("eval" << "s=Settings(str(arguments[1])); s.value('o2')[1]" << fileName, "2\n");
+    RUN("eval" << "s=Settings(str(arguments[1])); s.value('o2')[2]" << fileName, "3\n");
+
+    RUN("eval" << "s=Settings(str(arguments[1])); s.setValue('g1/o3', true)" << fileName, "");
+    RUN("eval" << "s=Settings(str(arguments[1])); s.value('g1/o3')" << fileName, "true\n");
+
+    RUN("eval" << "s=Settings(str(arguments[1])); s.childKeys()" << fileName, "o1\no2\n");
+    RUN("eval" << "s=Settings(str(arguments[1])); s.allKeys()" << fileName, "g1/o3\no1\no2\n");
+
+    RUN("eval" << "s=Settings(str(arguments[1])); s.beginGroup('g1'); s.group()" << fileName, "g1\n");
+    RUN("eval" << "s=Settings(str(arguments[1])); s.beginGroup('g1'); s.setValue('g1.2/o4', 'test')" << fileName, "");
+    RUN("eval" << "s=Settings(str(arguments[1])); s.beginGroup('g1'); s.childGroups()" << fileName, "g1.2\n");
+    RUN("eval" << "s=Settings(str(arguments[1])); s.beginGroup('g1'); s.endGroup(); s.childGroups()" << fileName, "g1\n");
+    RUN("eval" << "s=Settings(str(arguments[1])); s.value('g1/g1.2/o4')" << fileName, "test\n");
+    RUN("eval" << "s=Settings(str(arguments[1])); s.allKeys()" << fileName, "g1/g1.2/o4\ng1/o3\no1\no2\n");
+    RUN("eval" << "s=Settings(str(arguments[1])); s.remove('g1/g1.2/o4'); s.allKeys()" << fileName, "g1/o3\no1\no2\n");
+
+    RUN("eval" << "s=Settings(str(arguments[1])); s.beginWriteArray('a1', 3); s.setArrayIndex(1); s.setValue('o1', 'v1'); s.endArray()" << fileName, "");
+    RUN("eval" << "s=Settings(str(arguments[1])); s.beginReadArray('a1')" << fileName, "3\n");
+    RUN("eval" << "s=Settings(str(arguments[1])); s.beginReadArray('a1'); s.setArrayIndex(1); s.value('o1');" << fileName, "v1\n");
+
+    RUN("eval" << "s=Settings(str(arguments[1])); s.clear(); s.allKeys()" << fileName, "");
+
+    QVERIFY(QFile::remove(fileName));
+    QVERIFY(!QFile::exists(fileName));
+    RUN("eval" << "s=Settings(str(arguments[1])); s.setValue('o1', 1); s.sync(); File(str(arguments[1])).exists()" << fileName, "true\n");
+    QVERIFY(QFile::exists(fileName));
+
+    QVERIFY(QFile::remove(fileName));
+    QVERIFY(!QFile::exists(fileName));
+    RUN("eval" << "s=Settings(str(arguments[1])); s.setValue('o1', 1)" << fileName, "");
+    QVERIFY(QFile::exists(fileName));
+
+    const QString appConfigFileName = AppConfig().settings().fileName().remove(QStringLiteral("-bak"));
+    RUN("Settings().fileName()", QStringLiteral("%1\n").arg(appConfigFileName));
+    RUN("Settings().value('Options/tabs')", QStringLiteral("%1\n").arg(clipboardTabName));
+}
+
 void Tests::calledWithInstance()
 {
     // These would fail with the old deprecated Qt Script module.
@@ -2287,14 +2541,17 @@ void Tests::searchItems()
 
 void Tests::searchItemsAndSelect()
 {
-    RUN("add" << "xx2" << "a" << "xx" << "c", "");
+    RUN("add" << "xx1" << "a" << "xx2" << "c" << "xx3" << "d", "");
     RUN("keys" << ":xx" << filterEditId, "");
-
-    RUN("keys" << filterEditId << "DOWN" << clipboardBrowserId, "");
     RUN("testSelected", QString(clipboardTabName) + " 1 1\n");
 
-    RUN("keys" << clipboardBrowserId << "DOWN" << clipboardBrowserId, "");
+    RUN("keys" << filterEditId << "DOWN" << filterEditId, "");
     RUN("testSelected", QString(clipboardTabName) + " 3 3\n");
+
+    RUN("keys" << filterEditId << "DOWN" << filterEditId, "");
+    RUN("testSelected", QString(clipboardTabName) + " 5 5\n");
+
+    RUN("keys" << filterEditId << "TAB" << clipboardBrowserId, "");
 }
 
 void Tests::searchRowNumber()
@@ -2311,6 +2568,13 @@ void Tests::searchRowNumber()
     RUN("testSelected", QString(clipboardTabName) + " 2 2\n");
     RUN("keys" << "CTRL+A", "");
     RUN("testSelected", QString(clipboardTabName) + " 2 1 2 3\n");
+}
+
+void Tests::searchAccented()
+{
+    RUN("add" << "a" << "väčšina" << "a", "");
+    RUN("filter" << "vacsina", "");
+    WAIT_ON_OUTPUT("testSelected", QByteArray(clipboardTabName) + " 1 1\n");
 }
 
 void Tests::copyItems()
@@ -2599,6 +2863,27 @@ void Tests::renameTab()
     QVERIFY( !hasTab(tab2) );
 }
 
+void Tests::renameClipboardTab()
+{
+    const QString newClipboardTabName = clipboardTabName + QStringLiteral("2");
+    RUN("config" << "tray_tab" << clipboardTabName, clipboardTabName + QStringLiteral("\n"));
+    const QString icon = ":/images/icon";
+    RUN("tabicon" << clipboardTabName << icon, "");
+
+    RUN("renametab" << clipboardTabName << newClipboardTabName, "");
+    RUN("tab", newClipboardTabName + "\n");
+    RUN("config" << "clipboard_tab", newClipboardTabName + QStringLiteral("\n"));
+    RUN("config" << "tray_tab", newClipboardTabName + QStringLiteral("\n"));
+    RUN("tabicon" << newClipboardTabName, icon + QStringLiteral("\n"));
+
+    TEST( m_test->setClipboard("test1") );
+    WAIT_ON_OUTPUT("tab" << newClipboardTabName << "read" << "0", "test1");
+    RUN("tab", newClipboardTabName + "\n");
+
+    WAIT_ON_OUTPUT("read" << "0", "test1");
+    RUN("tab", newClipboardTabName + "\n");
+}
+
 void Tests::importExportTab()
 {
     const QString tab = testTab(1);
@@ -2664,6 +2949,7 @@ void Tests::nextPrevious()
     const QString tab = testTab(1);
     const Args args = Args("tab") << tab;
     RUN(args << "add" << "C" << "B" << "A", "");
+    RUN("setCurrentTab" << tab, "");
 
     RUN(args << "next", "");
     WAIT_FOR_CLIPBOARD("B");
@@ -3067,6 +3353,25 @@ void Tests::configPathEnvVariable()
     QCOMPARE( out.left(expectedOut.size()), expectedOut );
 }
 
+void Tests::configTabs()
+{
+    const QString sep = QStringLiteral("\n");
+    RUN("config" << "tabs", clipboardTabName + sep);
+
+    const QString tab1 = testTab(1);
+    RUN("tab" << tab1 << "add" << "test", "");
+    RUN("config" << "tabs", clipboardTabName + sep + tab1 + sep);
+
+    const QString tab2 = testTab(2);
+    RUN(QString("config('tabs', ['%1', '%2'])").arg(clipboardTabName, tab2), clipboardTabName + sep + tab2 + sep);
+    RUN("config" << "tabs", clipboardTabName + sep + tab2 + sep + tab1 + sep);
+    RUN("tab", clipboardTabName + sep + tab2 + sep + tab1 + sep);
+
+    RUN(QString("config('tabs', ['%1', '%2'])").arg(tab1, tab2), tab1 + sep + tab2 + sep);
+    RUN("config" << "tabs", tab1 + sep + tab2 + sep + clipboardTabName + sep);
+    RUN("tab", tab1 + sep + tab2 + sep + clipboardTabName + sep);
+}
+
 void Tests::shortcutCommand()
 {
     RUN("setCommands([{name: 'test', inMenu: true, shortcuts: ['Ctrl+F1'], cmd: 'copyq add OK'}])", "");
@@ -3131,10 +3436,12 @@ void Tests::shortcutCommandMatchCmd()
         )";
     RUN(script, "");
 
-    RUN("write" << "application/x-copyq-test1" << "1", "");
+    RUN("show" << tab, "");
+
+    RUN(args << "write" << "application/x-copyq-test1" << "1", "");
     WAIT_ON_OUTPUT(args << "keys('Ctrl+F1'); read(0)", "test1");
 
-    RUN("write" << "application/x-copyq-test2" << "2", "");
+    RUN(args << "write" << "application/x-copyq-test2" << "2", "");
     WAIT_ON_OUTPUT(args << "keys('Ctrl+F1'); read(0)", "test2");
 }
 
@@ -3587,6 +3894,33 @@ void Tests::displayCommand()
                 .toUtf8() );
 }
 
+void Tests::synchronizeInternalCommands()
+{
+    // Keep internal commands synced with the latest version
+    // but allow user to change some attributes.
+    const auto script = R"(
+        setCommands([
+            {
+                internalId: 'copyq_global_toggle',
+                enable: false,
+                icon: 'icon.png',
+                shortcuts: ['Ctrl+F1'],
+                globalShortcuts: ['Ctrl+F2'],
+                name: 'Old name',
+                cmd: 'Old command',
+            },
+        ])
+        )";
+    RUN(script, "");
+    RUN("commands()[0].internalId", "copyq_global_toggle\n");
+    RUN("commands()[0].enable", "false\n");
+    RUN("commands()[0].icon", "icon.png\n");
+    RUN("commands()[0].shortcuts", "Ctrl+F1\n");
+    RUN("commands()[0].globalShortcuts", "Ctrl+F2\n");
+    RUN("commands()[0].name", "Show/hide main window\n");
+    RUN("commands()[0].cmd", "copyq: toggle()\n");
+}
+
 void Tests::queryKeyboardModifiersCommand()
 {
     RUN("queryKeyboardModifiers()", "");
@@ -3971,11 +4305,6 @@ void Tests::startServerAndRunCommand()
 {
     RUN("--start-server" << "tab" << testTab(1) << "write('TEST');read(0)", "TEST");
 
-#ifdef Q_OS_MAC
-    SKIP("FIXME: For some reason the server is not started again on macOS");
-#elif defined(Q_OS_WIN)
-    SKIP("FIXME: For some reason the server is not stopped reliably on Windows");
-#endif
     TEST( m_test->stopServer() );
 
     QByteArray stdoutActual;
@@ -3993,6 +4322,10 @@ void Tests::startServerAndRunCommand()
     // client connection.
     QCOMPARE( run(Args("--start-server") << "exit();sleep(10000)", &stdoutActual, &stderrActual), 0 );
     QCOMPARE(stdoutActual, "Terminating server.\n");
+
+    // Try to start new client.
+    SleepTimer t(10000);
+    while ( run(Args("exit();sleep(10000)")) == 0 && t.sleep() ) {}
 }
 
 int Tests::run(
@@ -4006,7 +4339,7 @@ bool Tests::hasTab(const QString &tabName)
 {
     QByteArray out;
     run(Args("tab"), &out);
-    return splitLines(QString::fromUtf8(out)).contains(tabName);
+    return splitLines(out).contains(tabName);
 }
 
 int runTests(int argc, char *argv[])
@@ -4036,6 +4369,7 @@ int runTests(int argc, char *argv[])
     QCoreApplication::setOrganizationName(session);
     QCoreApplication::setApplicationName(session);
     Settings::canModifySettings = true;
+    initLogging();
 
     // Set higher default tests timeout.
     // The default value is 5 minutes (in Qt 5.15) which is not enough to run
@@ -4052,6 +4386,7 @@ int runTests(int argc, char *argv[])
     if (onlyPlugins.pattern().isEmpty()) {
         test->setupTest("CORE", QVariant());
         exitCode = test->runTests(&tc, argc, argv);
+        test->stopServer();
     }
 
     if (runPluginTests) {

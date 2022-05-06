@@ -110,6 +110,15 @@ for n in $(seq 9); do
     screenshot "Screenshot - Configuration Tab $n"
     "$Executable" keys "DOWN" "focus:ConfigurationManager"
 done
+"$Executable" keys "ESCAPE" "focus:ClipboardBrowser"
+
+"$Executable" keys "Shift+F1" "focus:AboutDialog"
+screenshot "Screenshot - About Dialog"
+"$Executable" keys "ESCAPE" "focus:ClipboardBrowser"
+
+"$Executable" keys "Alt+T" "focus:Menu"
+screenshot "Screenshot - Tab Menu"
+"$Executable" keys "ESCAPE" "focus:ClipboardBrowser"
 
 "$Executable" exit
 wait
@@ -118,3 +127,16 @@ export PATH=$OldPath
 
 choco install -y InnoSetup
 cmd " /c C:/ProgramData/chocolatey/bin/ISCC.exe /O$APPVEYOR_BUILD_FOLDER /DAppVersion=$APP_VERSION /DRoot=$Destination /DSource=$Source $Source/Shared/copyq.iss"
+
+# Test installer
+cmd " /c $APPVEYOR_BUILD_FOLDER/copyq-$APP_VERSION-setup.exe /VERYSILENT"
+"C:/Program Files (x86)/CopyQ/copyq.exe" --version
+
+# Test installer can close the app safely
+(
+    sleep 5
+    cmd " /c $APPVEYOR_BUILD_FOLDER/copyq-$APP_VERSION-setup.exe /VERYSILENT"
+) &
+export COPYQ_LOG_LEVEL=DEBUG
+"C:/Program Files (x86)/CopyQ/copyq.exe"
+wait
